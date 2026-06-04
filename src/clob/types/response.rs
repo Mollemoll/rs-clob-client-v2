@@ -410,7 +410,14 @@ pub struct TradeResponse {
     #[serde_as(deserialize_as = "DefaultOnNull")]
     pub maker_orders: Vec<MakerOrder>,
     /// On-chain transaction hash.
-    pub transaction_hash: B256,
+    ///
+    /// **V2 note:** absent for `status: "FAILED"` trades — they never settle
+    /// on-chain, so the production server omits the field entirely. Without
+    /// this `Option`, a single failed trade fails deserialization of the whole
+    /// page. Mirrors the WS `TradeMessage.transaction_hash`, which is already
+    /// optional for the same reason.
+    #[serde(default)]
+    pub transaction_hash: Option<B256>,
     pub trader_side: TraderSide,
     #[serde(default)]
     pub error_msg: Option<String>,

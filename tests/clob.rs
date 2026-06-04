@@ -2214,6 +2214,56 @@ mod authenticated {
     }
 
     #[tokio::test]
+    async fn trades_should_handle_missing_transaction_hash_on_failed() -> anyhow::Result<()> {
+        // Regression test: V2 production CLOB omits `transaction_hash` entirely
+        // for `status: "FAILED"` trades — they never settle on-chain, so there
+        // is no hash. Strict deserialization required the field and failed the
+        // entire Page<TradeResponse>; the field is now Option<B256> + default.
+        let server = MockServer::start();
+        let client = create_authenticated(&server).await?;
+
+        let mock = server.mock(|when, then| {
+            when.method(GET).path("/data/trades");
+            then.status(StatusCode::OK).json_body(json!({
+                "data": [
+                    {
+                        "id": "1",
+                        "taker_order_id": "taker_123",
+                        "market": "0x000000000000000000000000000000000000000000000000000000006d61726b",
+                        "asset_id": token_1(),
+                        "side": "BUY",
+                        "size": "12.5",
+                        "fee_rate_bps": "0",
+                        "price": "0.42",
+                        "status": "FAILED",
+                        "match_time": "1705322096",
+                        "last_update": "1705322130",
+                        "outcome": "YES",
+                        "bucket_index": 2,
+                        "owner": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                        "maker_address": "0x2222222222222222222222222222222222222222",
+                        "maker_orders": [],
+                        "trader_side": "TAKER"
+                    }
+                ],
+                "limit": 1,
+                "count": 1,
+                "next_cursor": "next"
+            }));
+        });
+
+        let request = TradesRequest::builder().build();
+        let response = client.trades(&request, None).await?;
+        mock.assert();
+
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].status, TradeStatusType::Failed);
+        assert_eq!(response.data[0].transaction_hash, None);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn notifications_should_succeed() -> anyhow::Result<()> {
         let server = MockServer::start();
         let client = create_authenticated(&server).await?;
