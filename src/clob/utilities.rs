@@ -366,6 +366,10 @@ mod tests {
     fn price_valid_at_boundaries() {
         assert!(price_valid(dec!(0.1), TickSize::Tenth));
         assert!(price_valid(dec!(0.9), TickSize::Tenth));
+        assert!(price_valid(dec!(0.0025), TickSize::FourHundredth));
+        assert!(price_valid(dec!(0.9975), TickSize::FourHundredth));
+        assert!(!price_valid(dec!(0.002), TickSize::FourHundredth));
+        assert!(!price_valid(dec!(0.998), TickSize::FourHundredth));
     }
 
     #[test]
@@ -380,6 +384,7 @@ mod tests {
     fn price_valid_all_tick_sizes() {
         assert!(price_valid(dec!(0.5), TickSize::Tenth));
         assert!(price_valid(dec!(0.5), TickSize::Hundredth));
+        assert!(price_valid(dec!(0.5), TickSize::FourHundredth));
         assert!(price_valid(dec!(0.5), TickSize::Thousandth));
         assert!(price_valid(dec!(0.5), TickSize::TenThousandth));
     }

@@ -357,6 +357,12 @@ pub enum TraderSide {
 pub enum TickSize {
     Tenth,
     Hundredth,
+    /// `0.0025` — a quarter cent (1/400). Rolled out by the CLOB in July
+    /// 2026 on select markets. Note this is the first tick size that is not
+    /// a power of ten: prices on these markets are multiples of `0.0025`
+    /// (four decimal places), so decimal-place rounding alone does not snap
+    /// a price onto the grid.
+    FourHundredth,
     Thousandth,
     TenThousandth,
 }
@@ -366,6 +372,7 @@ impl fmt::Display for TickSize {
         let name = match self {
             TickSize::Tenth => "Tenth",
             TickSize::Hundredth => "Hundredth",
+            TickSize::FourHundredth => "FourHundredth",
             TickSize::Thousandth => "Thousandth",
             TickSize::TenThousandth => "TenThousandth",
         };
@@ -380,6 +387,7 @@ impl TickSize {
         match self {
             TickSize::Tenth => dec!(0.1),
             TickSize::Hundredth => dec!(0.01),
+            TickSize::FourHundredth => dec!(0.0025),
             TickSize::Thousandth => dec!(0.001),
             TickSize::TenThousandth => dec!(0.0001),
         }
@@ -399,10 +407,11 @@ impl TryFrom<Decimal> for TickSize {
         match value {
             v if v == dec!(0.1) => Ok(TickSize::Tenth),
             v if v == dec!(0.01) => Ok(TickSize::Hundredth),
+            v if v == dec!(0.0025) => Ok(TickSize::FourHundredth),
             v if v == dec!(0.001) => Ok(TickSize::Thousandth),
             v if v == dec!(0.0001) => Ok(TickSize::TenThousandth),
             other => Err(Error::validation(format!(
-                "Unknown tick size: {other}. Expected one of: 0.1, 0.01, 0.001, 0.0001"
+                "Unknown tick size: {other}. Expected one of: 0.1, 0.01, 0.0025, 0.001, 0.0001"
             ))),
         }
     }
@@ -878,6 +887,7 @@ mod tests {
     fn tick_size_decimals_should_succeed() {
         assert_eq!(TickSize::Tenth.as_decimal().scale(), 1);
         assert_eq!(TickSize::Hundredth.as_decimal().scale(), 2);
+        assert_eq!(TickSize::FourHundredth.as_decimal().scale(), 4);
         assert_eq!(TickSize::Thousandth.as_decimal().scale(), 3);
         assert_eq!(TickSize::TenThousandth.as_decimal().scale(), 4);
     }
@@ -886,6 +896,10 @@ mod tests {
     fn tick_size_should_display() {
         assert_eq!(format!("{}", TickSize::Tenth), "Tenth(0.1)");
         assert_eq!(format!("{}", TickSize::Hundredth), "Hundredth(0.01)");
+        assert_eq!(
+            format!("{}", TickSize::FourHundredth),
+            "FourHundredth(0.0025)"
+        );
         assert_eq!(format!("{}", TickSize::Thousandth), "Thousandth(0.001)");
         assert_eq!(
             format!("{}", TickSize::TenThousandth),
@@ -903,8 +917,20 @@ mod tests {
             TickSize::try_from(dec!(0.001)).unwrap(),
             TickSize::Thousandth
         );
+        assert_eq!(
+            TickSize::try_from(dec!(0.0025)).unwrap(),
+            TickSize::FourHundredth
+        );
         assert_eq!(TickSize::try_from(dec!(0.01)).unwrap(), TickSize::Hundredth);
         assert_eq!(TickSize::try_from(dec!(0.1)).unwrap(), TickSize::Tenth);
+    }
+
+    #[test]
+    fn quarter_cent_tick_size_should_deserialize() {
+        // The July 2026 CLOB rollout serves `"minimum_tick_size": 0.0025`;
+        // this must deserialize instead of failing the whole market payload.
+        let tick: TickSize = serde_json::from_str("0.0025").unwrap();
+        assert_eq!(tick, TickSize::FourHundredth);
     }
 
     #[test]
