@@ -359,6 +359,12 @@ pub enum TickSize {
     Hundredth,
     Thousandth,
     TenThousandth,
+    /// A tick size outside the common {0.1, 0.01, 0.001, 0.0001} set.
+    ///
+    /// Polymarket serves markets with ticks like 0.0025, 0.02 and 0.04.
+    /// Carrying the raw value through — rather than rejecting the whole
+    /// `/tick-size` response — keeps those markets tradeable.
+    Other(Decimal),
 }
 
 impl fmt::Display for TickSize {
@@ -368,6 +374,7 @@ impl fmt::Display for TickSize {
             TickSize::Hundredth => "Hundredth",
             TickSize::Thousandth => "Thousandth",
             TickSize::TenThousandth => "TenThousandth",
+            TickSize::Other(_) => "Other",
         };
 
         write!(f, "{name}({})", self.as_decimal())
@@ -382,6 +389,7 @@ impl TickSize {
             TickSize::Hundredth => dec!(0.01),
             TickSize::Thousandth => dec!(0.001),
             TickSize::TenThousandth => dec!(0.0001),
+            TickSize::Other(value) => *value,
         }
     }
 }
@@ -401,8 +409,12 @@ impl TryFrom<Decimal> for TickSize {
             v if v == dec!(0.01) => Ok(TickSize::Hundredth),
             v if v == dec!(0.001) => Ok(TickSize::Thousandth),
             v if v == dec!(0.0001) => Ok(TickSize::TenThousandth),
+            // Polymarket also serves non-power-of-ten ticks (0.0025, 0.02,
+            // 0.04, …). Accept any value in the open interval (0, 1) rather
+            // than dropping the whole response; reject only out-of-range junk.
+            v if v > Decimal::ZERO && v < Decimal::ONE => Ok(TickSize::Other(v)),
             other => Err(Error::validation(format!(
-                "Unknown tick size: {other}. Expected one of: 0.1, 0.01, 0.001, 0.0001"
+                "Invalid tick size: {other}. Must be within the open interval (0, 1)"
             ))),
         }
     }
@@ -827,15 +839,35 @@ mod tests {
     }
 
     #[test]
-    fn non_standard_decimal_to_tick_size_should_fail() {
-        let result = TickSize::try_from(Decimal::ONE);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unknown tick size: 1")
-        );
+    fn out_of_range_decimal_to_tick_size_should_fail() {
+        for bad in [Decimal::ONE, Decimal::ZERO, dec!(-0.01)] {
+            let result = TickSize::try_from(bad);
+            assert!(result.is_err(), "expected {bad} to be rejected");
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Invalid tick size")
+            );
+        }
+    }
+
+    #[test]
+    fn non_standard_in_range_ticks_pass_through() {
+        // Polymarket serves these in production; they must not be rejected.
+        for raw in [dec!(0.0025), dec!(0.02), dec!(0.04)] {
+            let ts = TickSize::try_from(raw).expect("in-range tick should be accepted");
+            assert_eq!(ts, TickSize::Other(raw));
+            assert_eq!(ts.as_decimal(), raw);
+        }
+    }
+
+    #[test]
+    fn deserialize_non_standard_tick_size() {
+        // Regression: `minimum_tick_size` of 0.0025 used to fail the whole
+        // TickSizeResponse deserialize and drop the market. It must now parse.
+        let ts: TickSize = serde_json::from_str("0.0025").unwrap();
+        assert_eq!(ts.as_decimal(), dec!(0.0025));
     }
 
     #[test]
