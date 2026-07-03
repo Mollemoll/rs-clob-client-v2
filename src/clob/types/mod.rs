@@ -364,6 +364,13 @@ pub enum TickSize {
     /// Polymarket serves markets with ticks like 0.0025, 0.02 and 0.04.
     /// Carrying the raw value through — rather than rejecting the whole
     /// `/tick-size` response — keeps those markets tradeable.
+    ///
+    /// Caveat: [`crate::clob::order_builder`] validates/rounds price by
+    /// decimal *scale*, not tick-grid alignment, which is only equivalent for
+    /// powers of ten. For a non-power-of-ten `Other` tick the builder will not
+    /// reject an off-grid price (e.g. 0.03 on a 0.02 tick), so the CLOB would.
+    /// Callers must pre-snap prices to a multiple of the tick before building
+    /// an order on an `Other`-tick market.
     Other(Decimal),
 }
 
@@ -410,11 +417,18 @@ impl TryFrom<Decimal> for TickSize {
             v if v == dec!(0.001) => Ok(TickSize::Thousandth),
             v if v == dec!(0.0001) => Ok(TickSize::TenThousandth),
             // Polymarket also serves non-power-of-ten ticks (0.0025, 0.02,
-            // 0.04, …). Accept any value in the open interval (0, 1) rather
-            // than dropping the whole response; reject only out-of-range junk.
-            v if v > Decimal::ZERO && v < Decimal::ONE => Ok(TickSize::Other(v)),
+            // 0.04, …), always <= 0.1. Accept anything in (0, 0.1) as `Other`
+            // rather than dropping the whole response, but reject >= 0.1 (the
+            // only legitimate tick that large is 0.1 itself, matched above) and
+            // out-of-range junk, so a corrupt `/tick-size` response still errors
+            // loudly instead of being cached as a bogus tick. `normalize()`
+            // strips wire trailing zeros ("0.0200" -> 0.02) so the stored scale
+            // is deterministic — `order_builder` truncates order amounts to
+            // `tick.scale()`, which must not depend on how many zeros the API
+            // happened to send.
+            v if v > Decimal::ZERO && v < dec!(0.1) => Ok(TickSize::Other(v.normalize())),
             other => Err(Error::validation(format!(
-                "Invalid tick size: {other}. Must be within the open interval (0, 1)"
+                "Invalid tick size: {other}. Expected 0.1, 0.01, 0.001, 0.0001, or a value in (0, 0.1)"
             ))),
         }
     }
@@ -840,7 +854,17 @@ mod tests {
 
     #[test]
     fn out_of_range_decimal_to_tick_size_should_fail() {
-        for bad in [Decimal::ONE, Decimal::ZERO, dec!(-0.01)] {
+        // <= 0 or >= 1 is junk; >= 0.1 (but not the exact 0.1 tick) is an
+        // implausible tick that a corrupt response could carry — all must
+        // error loudly rather than be accepted as `Other`.
+        for bad in [
+            Decimal::ONE,
+            Decimal::ZERO,
+            dec!(-0.01),
+            dec!(0.5),
+            dec!(0.3),
+            dec!(0.12345),
+        ] {
             let result = TickSize::try_from(bad);
             assert!(result.is_err(), "expected {bad} to be rejected");
             assert!(
@@ -860,6 +884,17 @@ mod tests {
             assert_eq!(ts, TickSize::Other(raw));
             assert_eq!(ts.as_decimal(), raw);
         }
+    }
+
+    #[test]
+    fn other_tick_scale_is_normalized() {
+        // Wire trailing zeros must not leak into the stored scale, otherwise
+        // order_builder's `trunc_with_scale(tick.scale())` would truncate
+        // amounts to different precision for economically identical ticks.
+        let padded = "0.0200".parse::<Decimal>().unwrap(); // scale 4 on the wire
+        let ts = TickSize::try_from(padded).unwrap();
+        assert_eq!(ts.as_decimal().scale(), 2);
+        assert_eq!(ts, TickSize::try_from(dec!(0.02)).unwrap());
     }
 
     #[test]
