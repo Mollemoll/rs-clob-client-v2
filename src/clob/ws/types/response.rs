@@ -426,7 +426,13 @@ pub struct OrderMessage {
     /// Order owner (API key of order originator)
     #[serde(default)]
     pub order_owner: Option<ApiKey>,
-    /// Original order size
+    /// Original order size.
+    ///
+    /// Best-effort WS notification field: an empty or absent value deserializes
+    /// to `None` (see `size_matched` for why empty must be tolerated). If you
+    /// consume this, treat `None` as *unknown*, not zero — do not `unwrap_or`
+    /// it into exposure/remaining math; reconcile a value you must trust from
+    /// the authoritative REST `OpenOrderResponse` / trades instead.
     #[serde(default)]
     #[serde_as(as = "NoneAsEmptyString")]
     pub original_size: Option<Decimal>,
@@ -435,7 +441,8 @@ pub struct OrderMessage {
     /// Polymarket sends `""` (not `"0"` or an absent key) on a FAK order that
     /// was killed with no match — `#[serde(default)]` alone only covers an
     /// absent key, so the empty string would otherwise fail `Decimal` parsing
-    /// and drop the whole message. Treat empty as `None`.
+    /// and drop the whole message. Treat empty as `None`. Same consumer caveat
+    /// as `original_size`: `None` means unknown, not zero.
     #[serde(default)]
     #[serde_as(as = "NoneAsEmptyString")]
     pub size_matched: Option<Decimal>,
