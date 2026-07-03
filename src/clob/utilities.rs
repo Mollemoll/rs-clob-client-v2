@@ -383,10 +383,13 @@ mod tests {
     #[test]
     fn price_valid_all_tick_sizes() {
         assert!(price_valid(dec!(0.5), TickSize::Tenth));
+        assert!(price_valid(dec!(0.5), TickSize::TwentyFifth));
+        assert!(price_valid(dec!(0.5), TickSize::Fiftieth));
         assert!(price_valid(dec!(0.5), TickSize::Hundredth));
         assert!(price_valid(dec!(0.5), TickSize::FourHundredth));
         assert!(price_valid(dec!(0.5), TickSize::Thousandth));
         assert!(price_valid(dec!(0.5), TickSize::TenThousandth));
+        assert!(price_valid(dec!(0.5), TickSize::Other(dec!(0.05))));
     }
 
     #[test]

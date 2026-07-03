@@ -352,29 +352,50 @@ pub enum TraderSide {
 }
 
 /// Represents the maximum number of decimal places for an order's price field
+///
+/// The named variants cover the tick sizes observed on live CLOB markets.
+/// Anything else the API serves lands in [`TickSize::Other`] instead of
+/// failing deserialization of the whole payload (same philosophy as
+/// [`AssetType::Unknown`] / [`TraderSide::Unknown`]) — the venue has grown
+/// its tick-size set more than once (0.0025, 0.02 and 0.04 all appeared on
+/// live markets in 2026), and a client that hard-fails on a new one turns
+/// every such market into a deserialization error.
+///
+/// Note that not every tick size is a power of ten: for e.g. `0.0025`,
+/// `0.02` and `0.04`, prices are multiples of the tick, so decimal-place
+/// rounding alone does not snap a price onto the grid — callers that
+/// generate prices must snap to multiples of the tick themselves.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum TickSize {
     Tenth,
+    /// `0.04` (1/25). Observed on live CLOB markets in 2026.
+    TwentyFifth,
+    /// `0.02` (1/50). Observed on live CLOB markets in 2026.
+    Fiftieth,
     Hundredth,
     /// `0.0025` — a quarter cent (1/400). Rolled out by the CLOB in July
-    /// 2026 on select markets. Note this is the first tick size that is not
-    /// a power of ten: prices on these markets are multiples of `0.0025`
-    /// (four decimal places), so decimal-place rounding alone does not snap
-    /// a price onto the grid.
+    /// 2026 on select markets.
     FourHundredth,
     Thousandth,
     TenThousandth,
+    /// A tick size the API served that has no named variant (yet). Carries
+    /// the raw value so the market stays deserializable and orders remain
+    /// buildable; must be strictly between 0 and 1.
+    Other(Decimal),
 }
 
 impl fmt::Display for TickSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             TickSize::Tenth => "Tenth",
+            TickSize::TwentyFifth => "TwentyFifth",
+            TickSize::Fiftieth => "Fiftieth",
             TickSize::Hundredth => "Hundredth",
             TickSize::FourHundredth => "FourHundredth",
             TickSize::Thousandth => "Thousandth",
             TickSize::TenThousandth => "TenThousandth",
+            TickSize::Other(_) => "Other",
         };
 
         write!(f, "{name}({})", self.as_decimal())
@@ -386,10 +407,13 @@ impl TickSize {
     pub fn as_decimal(&self) -> Decimal {
         match self {
             TickSize::Tenth => dec!(0.1),
+            TickSize::TwentyFifth => dec!(0.04),
+            TickSize::Fiftieth => dec!(0.02),
             TickSize::Hundredth => dec!(0.01),
             TickSize::FourHundredth => dec!(0.0025),
             TickSize::Thousandth => dec!(0.001),
             TickSize::TenThousandth => dec!(0.0001),
+            TickSize::Other(value) => *value,
         }
     }
 }
@@ -404,14 +428,22 @@ impl TryFrom<Decimal> for TickSize {
     type Error = Error;
 
     fn try_from(value: Decimal) -> std::result::Result<Self, Self::Error> {
+        // Normalize so trailing zeros from the wire ("0.020") match the
+        // named variants and `scale()` reflects the real precision.
+        let value = value.normalize();
         match value {
             v if v == dec!(0.1) => Ok(TickSize::Tenth),
+            v if v == dec!(0.04) => Ok(TickSize::TwentyFifth),
+            v if v == dec!(0.02) => Ok(TickSize::Fiftieth),
             v if v == dec!(0.01) => Ok(TickSize::Hundredth),
             v if v == dec!(0.0025) => Ok(TickSize::FourHundredth),
             v if v == dec!(0.001) => Ok(TickSize::Thousandth),
             v if v == dec!(0.0001) => Ok(TickSize::TenThousandth),
+            // Unknown but plausible tick: accept rather than fail the whole
+            // market payload; the venue adds new tick sizes without notice.
+            v if v > Decimal::ZERO && v < Decimal::ONE => Ok(TickSize::Other(v)),
             other => Err(Error::validation(format!(
-                "Unknown tick size: {other}. Expected one of: 0.1, 0.01, 0.0025, 0.001, 0.0001"
+                "Unknown tick size: {other}. Expected a value strictly between 0 and 1"
             ))),
         }
     }
@@ -886,15 +918,20 @@ mod tests {
     #[test]
     fn tick_size_decimals_should_succeed() {
         assert_eq!(TickSize::Tenth.as_decimal().scale(), 1);
+        assert_eq!(TickSize::TwentyFifth.as_decimal().scale(), 2);
+        assert_eq!(TickSize::Fiftieth.as_decimal().scale(), 2);
         assert_eq!(TickSize::Hundredth.as_decimal().scale(), 2);
         assert_eq!(TickSize::FourHundredth.as_decimal().scale(), 4);
         assert_eq!(TickSize::Thousandth.as_decimal().scale(), 3);
         assert_eq!(TickSize::TenThousandth.as_decimal().scale(), 4);
+        assert_eq!(TickSize::Other(dec!(0.05)).as_decimal().scale(), 2);
     }
 
     #[test]
     fn tick_size_should_display() {
         assert_eq!(format!("{}", TickSize::Tenth), "Tenth(0.1)");
+        assert_eq!(format!("{}", TickSize::TwentyFifth), "TwentyFifth(0.04)");
+        assert_eq!(format!("{}", TickSize::Fiftieth), "Fiftieth(0.02)");
         assert_eq!(format!("{}", TickSize::Hundredth), "Hundredth(0.01)");
         assert_eq!(
             format!("{}", TickSize::FourHundredth),
@@ -905,6 +942,7 @@ mod tests {
             format!("{}", TickSize::TenThousandth),
             "TenThousandth(0.0001)"
         );
+        assert_eq!(format!("{}", TickSize::Other(dec!(0.05))), "Other(0.05)");
     }
 
     #[test]
@@ -922,15 +960,46 @@ mod tests {
             TickSize::FourHundredth
         );
         assert_eq!(TickSize::try_from(dec!(0.01)).unwrap(), TickSize::Hundredth);
+        assert_eq!(TickSize::try_from(dec!(0.02)).unwrap(), TickSize::Fiftieth);
+        assert_eq!(
+            TickSize::try_from(dec!(0.04)).unwrap(),
+            TickSize::TwentyFifth
+        );
         assert_eq!(TickSize::try_from(dec!(0.1)).unwrap(), TickSize::Tenth);
     }
 
     #[test]
-    fn quarter_cent_tick_size_should_deserialize() {
-        // The July 2026 CLOB rollout serves `"minimum_tick_size": 0.0025`;
-        // this must deserialize instead of failing the whole market payload.
+    fn new_2026_tick_sizes_should_deserialize() {
+        // Live CLOB markets serve these `minimum_tick_size` values (0.0025
+        // seen in production logs July 2026; 0.02 and 0.04 found by sampling
+        // ~8k live markets); each must deserialize instead of failing the
+        // whole market payload.
         let tick: TickSize = serde_json::from_str("0.0025").unwrap();
         assert_eq!(tick, TickSize::FourHundredth);
+        let tick: TickSize = serde_json::from_str("0.02").unwrap();
+        assert_eq!(tick, TickSize::Fiftieth);
+        let tick: TickSize = serde_json::from_str("0.04").unwrap();
+        assert_eq!(tick, TickSize::TwentyFifth);
+    }
+
+    #[test]
+    fn unknown_tick_size_should_fall_back_to_other() {
+        // A never-seen-before (but plausible) tick must not fail the payload.
+        let tick: TickSize = serde_json::from_str("0.05").unwrap();
+        assert_eq!(tick, TickSize::Other(dec!(0.05)));
+        assert_eq!(tick.as_decimal(), dec!(0.05));
+        // Trailing zeros from the wire normalize onto the named variants.
+        let tick: TickSize = serde_json::from_str("0.0200").unwrap();
+        assert_eq!(tick, TickSize::Fiftieth);
+        assert_eq!(tick.as_decimal().scale(), 2);
+    }
+
+    #[test]
+    fn implausible_tick_sizes_should_fail() {
+        assert!(TickSize::try_from(Decimal::ZERO).is_err());
+        assert!(TickSize::try_from(Decimal::ONE).is_err());
+        assert!(TickSize::try_from(dec!(-0.01)).is_err());
+        assert!(TickSize::try_from(dec!(2)).is_err());
     }
 
     #[test]
