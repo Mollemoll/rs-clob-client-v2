@@ -542,7 +542,11 @@ impl<K: AuthKind> OrderBuilder<Market, K> {
 
         let decimals = minimum_tick_size.scale();
 
-        // Ensure that the market price returned internally is truncated to our tick size
+        // Ensure that the market price returned internally is truncated to our tick size.
+        // NB: this truncates by decimal *scale*, which equals tick-grid rounding only for
+        // power-of-ten ticks. For a non-power-of-ten tick (e.g. 0.02 or 0.0025) this can
+        // yield an off-grid price (0.037 -> 0.03) that the CLOB rejects; callers on such
+        // markets must pass an already-grid-snapped price rather than relying on this path.
         let price = price.trunc_with_scale(decimals);
         if price < minimum_tick_size || price > Decimal::ONE - minimum_tick_size {
             return Err(Error::validation(format!(

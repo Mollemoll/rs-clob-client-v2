@@ -381,7 +381,10 @@ pub enum TickSize {
     TenThousandth,
     /// A tick size the API served that has no named variant (yet). Carries
     /// the raw value so the market stays deserializable and orders remain
-    /// buildable; must be strictly between 0 and 1.
+    /// buildable; must be in the open interval `(0, 0.1)` — every tick the
+    /// venue has ever served is ≤ 0.1, so a larger value (other than the
+    /// exact `0.1` tick) is a corrupt `/tick-size` response and errors
+    /// loudly instead of being cached as a bogus tick.
     Other(Decimal),
 }
 
@@ -441,9 +444,12 @@ impl TryFrom<Decimal> for TickSize {
             v if v == dec!(0.0001) => Ok(TickSize::TenThousandth),
             // Unknown but plausible tick: accept rather than fail the whole
             // market payload; the venue adds new tick sizes without notice.
-            v if v > Decimal::ZERO && v < Decimal::ONE => Ok(TickSize::Other(v)),
+            // Bounded at 0.1 — the coarsest tick the venue has ever served —
+            // so a corrupt response (0.3, 0.5, …) still errors loudly instead
+            // of being cached as a bogus tick that would brick the token.
+            v if v > Decimal::ZERO && v < dec!(0.1) => Ok(TickSize::Other(v)),
             other => Err(Error::validation(format!(
-                "Unknown tick size: {other}. Expected a value strictly between 0 and 1"
+                "Unknown tick size: {other}. Expected 0.1 or a value in (0, 0.1)"
             ))),
         }
     }
@@ -996,10 +1002,27 @@ mod tests {
 
     #[test]
     fn implausible_tick_sizes_should_fail() {
-        assert!(TickSize::try_from(Decimal::ZERO).is_err());
-        assert!(TickSize::try_from(Decimal::ONE).is_err());
-        assert!(TickSize::try_from(dec!(-0.01)).is_err());
-        assert!(TickSize::try_from(dec!(2)).is_err());
+        // <= 0 or >= 1 is junk, and every legitimate venue tick is <= 0.1 —
+        // anything larger (other than the exact 0.1 tick) is a corrupt
+        // response that must error loudly rather than be cached as `Other`.
+        for bad in [
+            Decimal::ZERO,
+            Decimal::ONE,
+            dec!(-0.01),
+            dec!(2),
+            dec!(0.5),
+            dec!(0.3),
+            dec!(0.12345),
+        ] {
+            let result = TickSize::try_from(bad);
+            assert!(result.is_err(), "expected {bad} to be rejected");
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Unknown tick size")
+            );
+        }
     }
 
     #[test]
